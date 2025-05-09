@@ -1,0 +1,141 @@
+// ------------------------------
+// USER CONFIGURATION SECTION
+// ------------------------------
+
+// Enter your Google Sheet URL here
+const SHEET_URL = 'https://docs.google.com/spreadsheets/d/1-P_FZgbzJaY5Z-bNiAAgpAyZ18TNqwDSeEWiQFJef08/edit?gid=1241969269#gid=1241969269';  // Replace with your Google Sheets URL
+
+// Tab names
+const SEARCH_TERMS_TAB = 'SearchTerms!';
+const NEGATIVE_KEYWORDS_TAB = 'Data!';
+
+// List of campaigns to exclude (manually add campaign names here)
+const EXCLUDED_CAMPAIGNS = 'Brand | SEM | Buy/Sell | Always On | AUS | Clicks';
+
+// GAQL Query for fetching search terms
+const SEARCH_TERMS_GAQL = `
+  SELECT 
+    campaign.name, 
+    ad_group.name, 
+    segments.keyword.info.text, 
+    search_term_view.search_term, 
+    metrics.cost_micros, 
+    metrics.average_cpc, 
+    metrics.clicks, 
+    metrics.ctr, 
+    metrics.impressions 
+  FROM search_term_view 
+  WHERE 
+    metrics.all_conversions < 0.1 
+    AND metrics.cost_micros > 1000000
+    AND metrics.clicks > 3
+    AND search_term_view.status NOT IN ('EXCLUDED')
+    AND segments.date DURING LAST_14_DAYS
+`;
+
+/**
+ * Main function
+ */
+function main() {
+  try {
+    // Validate Sheet URL
+    if (!SHEET_URL) {
+      throw new Error("Please provide a valid Google Sheet URL in SHEET_URL.");
+    }
+
+    let ss = SpreadsheetApp.openByUrl(SHEET_URL);
+    
+    // Export Search Terms
+    exportSearchTerms(ss);
+    
+    // Export Negative Keyword Lists (without keywords)
+    exportNegativeKeywordLists(ss);
+    
+    Logger.log("Data successfully exported!");
+  } catch (error) {
+    Logger.log("Error: " + error.message);
+  }
+}
+
+/**
+ * Fetch and export search terms into the "SearchTerms!" tab, excluding specific campaigns
+ */
+function exportSearchTerms(ss) {
+  let sheet = getOrCreateSheet(ss, SEARCH_TERMS_TAB);
+  let query = AdsApp.report(SEARCH_TERMS_GAQL);
+  
+  // Clear existing data
+  sheet.clear();
+  
+  let rows = query.rows();
+  let filteredData = [];
+  
+  while (rows.hasNext()) {
+    let row = rows.next();
+    let campaignName = row["campaign.name"];
+    
+    // Exclude specified campaigns
+    if (!EXCLUDED_CAMPAIGNS.includes(campaignName)) {
+      filteredData.push([
+        campaignName,
+        row["ad_group.name"],
+        row["segments.keyword.info.text"],
+        row["search_term_view.search_term"],
+        row["metrics.cost_micros"],
+        row["metrics.average_cpc"],
+        row["metrics.clicks"],
+        row["metrics.ctr"],
+        row["metrics.impressions"]
+      ]);
+    }
+  }
+  
+  // Write data to the sheet
+  if (filteredData.length > 0) {
+    sheet.getRange(2, 1, filteredData.length, filteredData[0].length).setValues(filteredData);
+  }
+  
+  Logger.log("Search Terms exported to " + SEARCH_TERMS_TAB);
+}
+
+/**
+ * Fetch and export only the names and IDs of negative keyword lists into the "Data!" tab
+ */
+function exportNegativeKeywordLists(ss) {
+  let sheet = getOrCreateSheet(ss, NEGATIVE_KEYWORDS_TAB);
+  
+  // Clear existing data
+  sheet.clear();
+  
+  // Add headers
+  let headers = ["Negative List Name", "Shared List ID"];
+  sheet.appendRow(headers);
+  
+  let negativeKeywordLists = AdsApp.negativeKeywordLists().get();
+  
+  while (negativeKeywordLists.hasNext()) {
+    let list = negativeKeywordLists.next();
+    let listName = list.getName();
+    let listId = list.getId();
+    
+    // Only exporting list name and ID, no individual keywords
+    sheet.appendRow([listName, listId]);
+  }
+  
+  Logger.log("Negative Keyword Lists (Names & IDs) exported to " + NEGATIVE_KEYWORDS_TAB);
+}
+
+/**
+ * Get or create a sheet within a Google Spreadsheet
+ */
+function getOrCreateSheet(ss, sheetName) {
+  let sheet = ss.getSheetByName(sheetName);
+  
+  if (!sheet) {
+    sheet = ss.insertSheet(sheetName);
+  } else {
+    sheet.clear();
+  }
+  
+  return sheet;
+}
