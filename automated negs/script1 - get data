@@ -6,7 +6,7 @@
 const SHEET_URL = '';  // Replace with your Google Sheets URL
 
 // List of campaigns to exclude (manually add campaign names here)
-const EXCLUDED_CAMPAIGNS = 'Brand | SEM | Buy/Sell | Always On | AUS | Clicks';
+const EXCLUDED_CAMPAIGNS = ''; //enter campaign names to exclude
 
 //do not edit anything below here
 
@@ -32,7 +32,7 @@ const SEARCH_TERMS_GAQL = `
     AND metrics.cost_micros > 1000000
     AND metrics.clicks > 3
     AND search_term_view.status NOT IN ('EXCLUDED')
-    AND segments.date DURING LAST_14_DAYS
+    AND segments.date DURING LAST_7_DAYS
 `;
 
 /**
