@@ -1,16 +1,18 @@
 // ------------------------------
 // USER CONFIGURATION SECTION
 // ------------------------------
-
+// make copy https://docs.google.com/spreadsheets/d/1gqdZYfK9fHaZVSYpZ1ZUQauvzHgvlVjOGaVcFSmtbiM/copy
 // Enter your Google Sheet URL here
-const SHEET_URL = 'https://docs.google.com/spreadsheets/d/1-P_FZgbzJaY5Z-bNiAAgpAyZ18TNqwDSeEWiQFJef08/edit?gid=1241969269#gid=1241969269';  // Replace with your Google Sheets URL
+const SHEET_URL = '';  // Replace with your Google Sheets URL
+
+// List of campaigns to exclude (manually add campaign names here)
+const EXCLUDED_CAMPAIGNS = 'Brand | SEM | Buy/Sell | Always On | AUS | Clicks';
+
+//do not edit anything below here
 
 // Tab names
 const SEARCH_TERMS_TAB = 'SearchTerms!';
 const NEGATIVE_KEYWORDS_TAB = 'Data!';
-
-// List of campaigns to exclude (manually add campaign names here)
-const EXCLUDED_CAMPAIGNS = 'Brand | SEM | Buy/Sell | Always On | AUS | Clicks';
 
 // GAQL Query for fetching search terms
 const SEARCH_TERMS_GAQL = `
