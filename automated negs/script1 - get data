@@ -2,7 +2,11 @@
 // CONFIGURATION
 // ------------------------------
 
-const SHEET_URL = ''; // Leave blank to auto-create the sheet
+// MAKE COPY AND PASTE BELOW https://docs.google.com/spreadsheets/d/1Iz-bdFTnVdKBEP4kAQPg5M9ciReVTw4ynm8yzj4jutI/copy
+const SHEET_URL = '';
+
+//DO NOT EDIT BELOW HERE, BUT DONT LET THAT STOP YOU
+
 const SEARCH_TERMS_TAB = 'Expensive_No_Conversions';
 const NEGATIVE_LISTS_TAB = 'Negative_Keyword_Lists';
 const INSTRUCTIONS_TAB = 'Instructions';
