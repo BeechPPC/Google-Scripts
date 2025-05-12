@@ -1,143 +1,156 @@
 // ------------------------------
-// USER CONFIGURATION SECTION
+// CONFIGURATION
 // ------------------------------
-// make copy https://docs.google.com/spreadsheets/d/1gqdZYfK9fHaZVSYpZ1ZUQauvzHgvlVjOGaVcFSmtbiM/copy
-// Enter your Google Sheet URL here
-const SHEET_URL = '';  // Replace with your Google Sheets URL
 
-// List of campaigns to exclude (manually add campaign names here)
-const EXCLUDED_CAMPAIGNS = ''; //enter campaign names to exclude
+const SHEET_URL = ''; // make copy of sheet 
+const SEARCH_TERMS_TAB = 'Expensive_No_Conversions';
+const NEGATIVE_LISTS_TAB = 'Negative_Keyword_Lists';
+const DATE_RANGE = 'LAST_30_DAYS';
+// ------------------------------
+// GAQL QUERY: Search Terms with No Conversions
+// ------------------------------
 
-//do not edit anything below here
-
-// Tab names
-const SEARCH_TERMS_TAB = 'SearchTerms!';
-const NEGATIVE_KEYWORDS_TAB = 'Data!';
-
-// GAQL Query for fetching search terms
-const SEARCH_TERMS_GAQL = `
-  SELECT 
-    campaign.name, 
-    ad_group.name, 
-    segments.keyword.info.text, 
-    search_term_view.search_term, 
-    metrics.cost_micros, 
-    metrics.average_cpc, 
-    metrics.clicks, 
-    metrics.ctr, 
-    metrics.impressions 
-  FROM search_term_view 
-  WHERE 
-    metrics.all_conversions < 0.1 
-    AND metrics.cost_micros > 1000000
-    AND metrics.clicks > 3
-    AND search_term_view.status NOT IN ('EXCLUDED')
-    AND segments.date DURING LAST_7_DAYS
+const QUERY = `
+  SELECT
+    campaign.name,
+    ad_group.name,
+    segments.keyword.info.text,
+    segments.keyword.info.match_type,
+    search_term_view.search_term,
+    metrics.impressions,
+    metrics.clicks,
+    metrics.cost_micros,
+    metrics.conversions
+  FROM search_term_view
+  WHERE metrics.conversions = 0
+    AND campaign.advertising_channel_type = 'SEARCH'
+    AND campaign.status IN ('ENABLED', 'PAUSED')
+    AND segments.date DURING ${DATE_RANGE}
+    AND metrics.clicks > 0
+  ORDER BY metrics.cost_micros DESC
 `;
 
-/**
- * Main function
- */
 function main() {
-  try {
-    // Validate Sheet URL
-    if (!SHEET_URL) {
-      throw new Error("Please provide a valid Google Sheet URL in SHEET_URL.");
-    }
-
-    let ss = SpreadsheetApp.openByUrl(SHEET_URL);
-    
-    // Export Search Terms
-    exportSearchTerms(ss);
-    
-    // Export Negative Keyword Lists (without keywords)
-    exportNegativeKeywordLists(ss);
-    
-    Logger.log("Data successfully exported!");
-  } catch (error) {
-    Logger.log("Error: " + error.message);
-  }
-}
-
-/**
- * Fetch and export search terms into the "SearchTerms!" tab, excluding specific campaigns
- */
-function exportSearchTerms(ss) {
-  let sheet = getOrCreateSheet(ss, SEARCH_TERMS_TAB);
-  let query = AdsApp.report(SEARCH_TERMS_GAQL);
-  
-  // Clear existing data
-  sheet.clear();
-  
-  let rows = query.rows();
-  let filteredData = [];
-  
-  while (rows.hasNext()) {
-    let row = rows.next();
-    let campaignName = row["campaign.name"];
-    
-    // Exclude specified campaigns
-    if (!EXCLUDED_CAMPAIGNS.includes(campaignName)) {
-      filteredData.push([
-        campaignName,
-        row["ad_group.name"],
-        row["segments.keyword.info.text"],
-        row["search_term_view.search_term"],
-        row["metrics.cost_micros"],
-        row["metrics.average_cpc"],
-        row["metrics.clicks"],
-        row["metrics.ctr"],
-        row["metrics.impressions"]
-      ]);
-    }
-  }
-  
-  // Write data to the sheet
-  if (filteredData.length > 0) {
-    sheet.getRange(2, 1, filteredData.length, filteredData[0].length).setValues(filteredData);
-  }
-  
-  Logger.log("Search Terms exported to " + SEARCH_TERMS_TAB);
-}
-
-/**
- * Fetch and export only the names and IDs of negative keyword lists into the "Data!" tab
- */
-function exportNegativeKeywordLists(ss) {
-  let sheet = getOrCreateSheet(ss, NEGATIVE_KEYWORDS_TAB);
-  
-  // Clear existing data
-  sheet.clear();
-  
-  // Add headers
-  let headers = ["Negative List Name", "Shared List ID"];
-  sheet.appendRow(headers);
-  
-  let negativeKeywordLists = AdsApp.negativeKeywordLists().get();
-  
-  while (negativeKeywordLists.hasNext()) {
-    let list = negativeKeywordLists.next();
-    let listName = list.getName();
-    let listId = list.getId();
-    
-    // Only exporting list name and ID, no individual keywords
-    sheet.appendRow([listName, listId]);
-  }
-  
-  Logger.log("Negative Keyword Lists (Names & IDs) exported to " + NEGATIVE_KEYWORDS_TAB);
-}
-
-/**
- * Get or create a sheet within a Google Spreadsheet
- */
-function getOrCreateSheet(ss, sheetName) {
-  let sheet = ss.getSheetByName(sheetName);
-  
-  if (!sheet) {
-    sheet = ss.insertSheet(sheetName);
+  // Open or create sheet
+  let ss;
+  if (!SHEET_URL) {
+    ss = SpreadsheetApp.create("Non-Converting Search Terms Report");
+    Logger.log("Sheet created: " + ss.getUrl());
   } else {
-    sheet.clear();
+    ss = SpreadsheetApp.openByUrl(SHEET_URL);
   }
-  
+
+  // Clear old data and set up Search Terms tab
+  let searchSheet = getOrCreateSheet(ss, SEARCH_TERMS_TAB);
+  searchSheet.clearContents();
+
+  // Run query and process
+  let rows = AdsApp.search(QUERY);
+  let processedRows = processSearchTerms(rows);
+
+  const headers = [
+    'Campaign Name', 'Ad Group Name', 'Keyword', 'Match Type', 'Search Term',
+    'Impressions', 'Clicks', 'Cost ($)', 'Avg. CPC', 'CTR'
+  ];
+  searchSheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+
+  if (processedRows.length > 0) {
+    searchSheet.getRange(2, 1, processedRows.length, headers.length).setValues(processedRows);
+  }
+
+  // Export negative keyword lists to separate tab
+  exportNegativeKeywordLists(ss);
+}
+
+// ------------------------------
+// PROCESS SEARCH TERM DATA
+// ------------------------------
+
+function processSearchTerms(rows) {
+  const output = [];
+
+  // Sample row structure log
+  const sampleQuery = QUERY + ' LIMIT 1';
+  const sample = AdsApp.search(sampleQuery);
+  if (sample.hasNext()) {
+    Logger.log("Sample row: " + JSON.stringify(sample.next()));
+  }
+
+  while (rows.hasNext()) {
+    try {
+      const row = rows.next();
+
+      const campaignName = row.campaign.name;
+      const adGroupName = row.adGroup.name;
+      const keywordText = row.segments.keyword.info.text;
+      const matchType = row.segments.keyword.info.matchType;
+      const searchTerm = row.searchTermView.searchTerm;
+
+      const impressions = Number(row.metrics.impressions) || 0;
+      const clicks = Number(row.metrics.clicks) || 0;
+      const costMicros = Number(row.metrics.costMicros) || 0;
+
+      const cost = costMicros / 1000000;
+      const cpc = clicks > 0 ? cost / clicks : 0;
+      const ctr = impressions > 0 ? clicks / impressions : 0;
+
+      output.push([
+        campaignName,
+        adGroupName,
+        keywordText,
+        matchType,
+        searchTerm,
+        impressions,
+        clicks,
+        cost.toFixed(2),
+        cpc.toFixed(2),
+        (ctr * 100).toFixed(2) + '%'
+      ]);
+    } catch (err) {
+      Logger.log("Error processing row: " + err);
+    }
+  }
+
+  return output;
+}
+
+// ------------------------------
+// EXPORT NEGATIVE KEYWORD LISTS
+// ------------------------------
+
+function exportNegativeKeywordLists(ss) {
+  const sheet = getOrCreateSheet(ss, NEGATIVE_LISTS_TAB);
+  sheet.clearContents();
+
+  const headers = ['List Name', 'List ID'];
+  const data = [];
+
+  const negLists = AdsApp.negativeKeywordLists().get();
+  while (negLists.hasNext()) {
+    const list = negLists.next();
+    const fullResourceName = list.getResourceName(); // e.g. customers/1234567890/negativeKeywordLists/456
+    const id = fullResourceName.split('/').pop(); // Extracts just "456"
+
+    data.push([
+      list.getName(),
+      id
+    ]);
+  }
+
+  sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+  if (data.length > 0) {
+    sheet.getRange(2, 1, data.length, headers.length).setValues(data);
+  }
+}
+
+// ------------------------------
+// HELPER: Create Tab If Not Exists
+// ------------------------------
+
+function getOrCreateSheet(ss, name) {
+  let sheet = ss.getSheetByName(name);
+  if (!sheet) {
+    sheet = ss.insertSheet(name);
+  }
   return sheet;
 }
