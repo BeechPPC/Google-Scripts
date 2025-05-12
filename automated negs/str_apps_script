@@ -1,0 +1,105 @@
+const SHEET_NAME = 'Search Terms';
+const INSTRUCTIONS_TAB = 'Instructions';
+const API_KEY_CELL = 'D7';
+const START_ROW = 5;
+const START_COL_SUGGESTION = 14; // Column N
+const START_COL_REASON = 15;     // Column O
+
+function getAISuggestionsFromOpenAI() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(SHEET_NAME);
+  const instructions = ss.getSheetByName(INSTRUCTIONS_TAB);
+  const apiKey = instructions.getRange(API_KEY_CELL).getValue().toString().trim();
+
+  if (!apiKey) {
+    SpreadsheetApp.getUi().alert('No OpenAI API key provided in Instructions!D7');
+    return;
+  }
+
+  const data = sheet.getRange(START_ROW, 1, sheet.getLastRow() - START_ROW + 1, 10).getValues(); // columns A to J
+  const suggestions = [];
+
+  for (let i = 0; i < data.length; i++) {
+    const row = data[i];
+    const [campaign, adGroup, keyword, matchType, searchTerm, impressions, clicks, cost, cpc, ctr] = row;
+
+    const prompt = buildPrompt({ campaign, adGroup, keyword, matchType, searchTerm, impressions, clicks, cost, cpc, ctr });
+    const response = callOpenAI(prompt, apiKey);
+
+    const classification = response.classification || "OBSERVE";
+    const reason = response.reason || "AI returned no reason.";
+    suggestions.push([classification, reason]);
+  }
+
+  if (suggestions.length > 0) {
+    sheet.getRange(START_ROW, START_COL_SUGGESTION, suggestions.length, 2).setValues(suggestions);
+  }
+}
+
+function buildPrompt(data) {
+  return `
+You are an expert Google Ads strategist evaluating search terms for optimization. 
+Your goal is to classify the search term based on performance and relevance using the following rules:
+
+Classification Rules:
+1. "ADD AS NEG" — If:
+   - CTR is less than 1% and clicks = 0, OR
+   - Cost is greater than $5 with no clicks, OR
+   - The search term is clearly irrelevant to the keyword
+2. "OBSERVE" — If:
+   - Impressions > 50 AND CTR > 3% but clicks < 3, OR
+   - It is low cost but shows early signs of potential
+3. "ADD AS KW" — If:
+   - CTR > 5% AND clicks ≥ 3, AND
+   - CPC is below $2, AND
+   - The search term is clearly relevant to the keyword
+
+Here is the search term record:
+- Campaign: ${data.campaign}
+- Ad Group: ${data.adGroup}
+- Keyword: ${data.keyword}
+- Match Type: ${data.matchType}
+- Search Term: ${data.searchTerm}
+- Impressions: ${data.impressions}
+- Clicks: ${data.clicks}
+- Cost: $${data.cost}
+- CPC: $${data.cpc}
+- CTR: ${data.ctr}%
+
+Respond in this JSON format ONLY:
+{
+  "classification": "ADD AS NEG" | "OBSERVE" | "ADD AS KW",
+  "reason": "One short sentence explaining why you chose that label, based on the data and relevance."
+}`;
+}
+
+function callOpenAI(prompt, apiKey) {
+  const url = 'https://api.openai.com/v1/chat/completions';
+
+  const payload = {
+    model: 'gpt-4',
+    messages: [{ role: 'user', content: prompt }],
+    temperature: 0.2,
+  };
+
+  const options = {
+    method: 'post',
+    contentType: 'application/json',
+    headers: {
+      Authorization: 'Bearer ' + apiKey,
+    },
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true,
+  };
+
+  try {
+    const response = UrlFetchApp.fetch(url, options);
+    const json = JSON.parse(response.getContentText());
+    const raw = json.choices?.[0]?.message?.content;
+    const parsed = JSON.parse(raw);
+    return parsed;
+  } catch (err) {
+    Logger.log('OpenAI error: ' + err);
+    return { classification: "OBSERVE", reason: "Error or invalid response from OpenAI." };
+  }
+}
