@@ -2,83 +2,80 @@
 // CONFIGURATION
 // ------------------------------
 
-const SHEET_URL = ''; // make copy of sheet 
+const SHEET_URL = ''; // Leave blank to auto-create the sheet
 const SEARCH_TERMS_TAB = 'Expensive_No_Conversions';
 const NEGATIVE_LISTS_TAB = 'Negative_Keyword_Lists';
-const DATE_RANGE = 'LAST_30_DAYS';
-// ------------------------------
-// GAQL QUERY: Search Terms with No Conversions
-// ------------------------------
-
-const QUERY = `
-  SELECT
-    campaign.name,
-    ad_group.name,
-    segments.keyword.info.text,
-    segments.keyword.info.match_type,
-    search_term_view.search_term,
-    metrics.impressions,
-    metrics.clicks,
-    metrics.cost_micros,
-    metrics.conversions
-  FROM search_term_view
-  WHERE metrics.conversions = 0
-    AND campaign.advertising_channel_type = 'SEARCH'
-    AND campaign.status IN ('ENABLED', 'PAUSED')
-    AND segments.date DURING ${DATE_RANGE}
-    AND metrics.clicks > 0
-  ORDER BY metrics.cost_micros DESC
-`;
+const INSTRUCTIONS_TAB = 'Instructions';
+const DATE_CELL = 'D10';
 
 function main() {
-  // Open or create sheet
-  let ss;
-  if (!SHEET_URL) {
-    ss = SpreadsheetApp.create("Non-Converting Search Terms Report");
-    Logger.log("Sheet created: " + ss.getUrl());
-  } else {
-    ss = SpreadsheetApp.openByUrl(SHEET_URL);
-  }
+  const ss = SHEET_URL ? SpreadsheetApp.openByUrl(SHEET_URL) : SpreadsheetApp.create("Non-Converting Search Terms Report");
+  if (!SHEET_URL) Logger.log("Sheet created: " + ss.getUrl());
 
-  // Clear old data and set up Search Terms tab
-  let searchSheet = getOrCreateSheet(ss, SEARCH_TERMS_TAB);
-  searchSheet.clearContents();
+  const dateRange = getSelectedDateRange(ss);
+  const query = buildQuery(dateRange);
+  const searchSheet = getOrCreateSheet(ss, SEARCH_TERMS_TAB);
+  if (searchSheet.getLastRow() > 0) searchSheet.clearContents();
 
-  // Run query and process
-  let rows = AdsApp.search(QUERY);
-  let processedRows = processSearchTerms(rows);
+  const rows = AdsApp.search(query);
+  const processed = processSearchTerms(rows, query);
 
   const headers = [
     'Campaign Name', 'Ad Group Name', 'Keyword', 'Match Type', 'Search Term',
     'Impressions', 'Clicks', 'Cost ($)', 'Avg. CPC', 'CTR'
   ];
   searchSheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-
-  if (processedRows.length > 0) {
-    searchSheet.getRange(2, 1, processedRows.length, headers.length).setValues(processedRows);
+  if (processed.length > 0) {
+    searchSheet.getRange(2, 1, processed.length, headers.length).setValues(processed);
   }
 
-  // Export negative keyword lists to separate tab
   exportNegativeKeywordLists(ss);
 }
 
-// ------------------------------
-// PROCESS SEARCH TERM DATA
-// ------------------------------
+function getSelectedDateRange(ss) {
+  const sheet = ss.getSheetByName(INSTRUCTIONS_TAB);
+  if (!sheet) return "LAST_30_DAYS";
+  const val = sheet.getRange(DATE_CELL).getValue();
+  const input = val.toString().trim();
+  if (input === "7" || val === 7) return "LAST_7_DAYS";
+  if (input === "14" || val === 14) return "LAST_14_DAYS";
+  if (input === "30" || val === 30) return "LAST_30_DAYS";
+  return "LAST_30_DAYS";
+}
 
-function processSearchTerms(rows) {
+function buildQuery(dateRange) {
+  return `
+    SELECT
+      campaign.name,
+      ad_group.name,
+      segments.keyword.info.text,
+      segments.keyword.info.match_type,
+      search_term_view.search_term,
+      metrics.impressions,
+      metrics.clicks,
+      metrics.cost_micros,
+      metrics.conversions
+    FROM search_term_view
+    WHERE metrics.conversions = 0
+      AND campaign.advertising_channel_type = 'SEARCH'
+      AND campaign.status IN ('ENABLED', 'PAUSED')
+      AND segments.date DURING ${dateRange}
+      AND metrics.clicks > 0  
+    ORDER BY metrics.cost_micros DESC
+  `;
+}
+
+function processSearchTerms(rows, query) {
   const output = [];
-
-  // Sample row structure log
-  const sampleQuery = QUERY + ' LIMIT 1';
-  const sample = AdsApp.search(sampleQuery);
-  if (sample.hasNext()) {
-    Logger.log("Sample row: " + JSON.stringify(sample.next()));
-  }
+  let loggedSample = false;
 
   while (rows.hasNext()) {
     try {
       const row = rows.next();
+      if (!loggedSample) {
+        Logger.log("Sample row structure: " + JSON.stringify(row));
+        loggedSample = true;
+      }
 
       const campaignName = row.campaign.name;
       const adGroupName = row.adGroup.name;
@@ -89,8 +86,8 @@ function processSearchTerms(rows) {
       const impressions = Number(row.metrics.impressions) || 0;
       const clicks = Number(row.metrics.clicks) || 0;
       const costMicros = Number(row.metrics.costMicros) || 0;
-
       const cost = costMicros / 1000000;
+
       const cpc = clicks > 0 ? cost / clicks : 0;
       const ctr = impressions > 0 ? clicks / impressions : 0;
 
@@ -114,13 +111,9 @@ function processSearchTerms(rows) {
   return output;
 }
 
-// ------------------------------
-// EXPORT NEGATIVE KEYWORD LISTS
-// ------------------------------
-
 function exportNegativeKeywordLists(ss) {
   const sheet = getOrCreateSheet(ss, NEGATIVE_LISTS_TAB);
-  sheet.clearContents();
+  if (sheet.getLastRow() > 0) sheet.clearContents();
 
   const headers = ['List Name', 'List ID'];
   const data = [];
@@ -128,13 +121,8 @@ function exportNegativeKeywordLists(ss) {
   const negLists = AdsApp.negativeKeywordLists().get();
   while (negLists.hasNext()) {
     const list = negLists.next();
-    const fullResourceName = list.getResourceName(); // e.g. customers/1234567890/negativeKeywordLists/456
-    const id = fullResourceName.split('/').pop(); // Extracts just "456"
-
-    data.push([
-      list.getName(),
-      id
-    ]);
+    const id = list.getResourceName().split('/').pop();
+    data.push([list.getName(), id]);
   }
 
   sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
@@ -142,10 +130,6 @@ function exportNegativeKeywordLists(ss) {
     sheet.getRange(2, 1, data.length, headers.length).setValues(data);
   }
 }
-
-// ------------------------------
-// HELPER: Create Tab If Not Exists
-// ------------------------------
 
 function getOrCreateSheet(ss, name) {
   let sheet = ss.getSheetByName(name);
