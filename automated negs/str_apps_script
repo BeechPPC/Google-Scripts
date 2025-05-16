@@ -1,41 +1,272 @@
 const SHEET_NAME = 'Search Terms';
 const INSTRUCTIONS_TAB = 'Instructions';
 const API_KEY_CELL = 'D7';
+const MODEL_SELECTION_CELL = 'D5';
 const START_ROW = 5;
 const START_COL_SUGGESTION = 14; // Column N
 const START_COL_REASON = 15;     // Column O
+const STATUS_CELL = 'Q1';
 
+// Function to run when the spreadsheet is opened - adds custom menu
+function onOpen() {
+  const ui = SpreadsheetApp.getUi();
+  ui.createMenu('Google Ads Tools')
+    .addItem('Get AI Suggestions', 'getAISuggestionsFromOpenAI')
+    .addItem('Reset Conditional Formatting', 'applyConditionalFormatting')
+    .addToUi();
+}
+
+// Helper function to create model selection dropdown in Instructions tab
+function setupModelDropdown() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const instructions = ss.getSheetByName(INSTRUCTIONS_TAB);
+  
+  // Add label
+  instructions.getRange('C5').setValue('Select AI Model:');
+  
+  // Create dropdown with model options
+  const cell = instructions.getRange(MODEL_SELECTION_CELL);
+  const rule = SpreadsheetApp.newDataValidation()
+    .requireValueInList(['gpt-3.5-turbo (Cheaper)', 'gpt-4o (Standard)', 'gpt-4 (Premium)'], true)
+    .build();
+  cell.setDataValidation(rule);
+  
+  // Set default value if empty
+  if (!cell.getValue()) {
+    cell.setValue('gpt-4o (Standard)');
+  }
+}
+
+// Apply conditional formatting to the classification column (compatible version)
+function applyConditionalFormatting() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(SHEET_NAME);
+  
+  if (!sheet) {
+    SpreadsheetApp.getUi().alert('Search Terms sheet not found!');
+    return;
+  }
+  
+  try {
+    // Clear existing conditional formatting rules
+    sheet.clearConditionalFormatRules();
+    
+    // Define the range for classification column
+    const lastRow = Math.max(1000, sheet.getLastRow()); // Format at least 1000 rows for future data
+    const classificationRange = sheet.getRange(START_ROW, START_COL_SUGGESTION, lastRow - START_ROW + 1, 1);
+    
+    // Create rules array
+    const rules = [];
+    
+    // Add conditional formatting rule for "ADD AS NEG" (red background)
+    rules.push(SpreadsheetApp.newConditionalFormatRule()
+      .whenTextEqualTo("ADD AS NEG")
+      .setBackground("#F4CCCC") // Light red
+      .setFontColor("#990000") // Dark red
+      .setRanges([classificationRange])
+      .build());
+    
+    // Add conditional formatting rule for "OBSERVE" (yellow background)
+    rules.push(SpreadsheetApp.newConditionalFormatRule()
+      .whenTextEqualTo("OBSERVE")
+      .setBackground("#FFF2CC") // Light yellow
+      .setFontColor("#7F6000") // Dark yellow/gold
+      .setRanges([classificationRange])
+      .build());
+    
+    // Add conditional formatting rule for "ADD AS KW" (green background)
+    rules.push(SpreadsheetApp.newConditionalFormatRule()
+      .whenTextEqualTo("ADD AS KW")
+      .setBackground("#D9EAD3") // Light green
+      .setFontColor("#274E13") // Dark green
+      .setRanges([classificationRange])
+      .build());
+    
+    // Set all rules at once
+    sheet.setConditionalFormatRules(rules);
+    
+    // Add headers if they don't exist
+    const headers = sheet.getRange(START_ROW - 1, START_COL_SUGGESTION, 1, 2).getValues()[0];
+    if (!headers[0]) {
+      sheet.getRange(START_ROW - 1, START_COL_SUGGESTION).setValue("AI Suggestion");
+      sheet.getRange(START_ROW - 1, START_COL_REASON).setValue("Reason");
+      
+      // Format headers
+      sheet.getRange(START_ROW - 1, START_COL_SUGGESTION, 1, 2)
+        .setBackground("#EFEFEF")
+        .setFontWeight("bold");
+    }
+    
+    SpreadsheetApp.getUi().alert('Conditional formatting applied successfully!');
+  } catch (error) {
+    Logger.log('Error applying conditional formatting: ' + error);
+    SpreadsheetApp.getUi().alert('Error applying conditional formatting. Basic functionality will still work.');
+  }
+}
+
+// Main function to get AI suggestions for search terms
 function getAISuggestionsFromOpenAI() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(SHEET_NAME);
   const instructions = ss.getSheetByName(INSTRUCTIONS_TAB);
-  const apiKey = instructions.getRange(API_KEY_CELL).getValue().toString().trim();
-
-  if (!apiKey) {
-    SpreadsheetApp.getUi().alert('No OpenAI API key provided in Instructions!D7');
+  const ui = SpreadsheetApp.getUi();
+  
+  // Check if instructions tab exists
+  if (!instructions) {
+    ui.alert('Instructions tab not found! Please check your spreadsheet setup.');
     return;
   }
-
-  const data = sheet.getRange(START_ROW, 1, sheet.getLastRow() - START_ROW + 1, 10).getValues(); // columns A to J
-  const suggestions = [];
-
-  for (let i = 0; i < data.length; i++) {
-    const row = data[i];
-    const [campaign, adGroup, keyword, matchType, searchTerm, impressions, clicks, cost, cpc, ctr] = row;
-
-    const prompt = buildPrompt({ campaign, adGroup, keyword, matchType, searchTerm, impressions, clicks, cost, cpc, ctr });
-    const response = callOpenAI(prompt, apiKey);
-
-    const classification = response.classification || "OBSERVE";
-    const reason = response.reason || "AI returned no reason.";
-    suggestions.push([classification, reason]);
+  
+  // Ensure model dropdown is set up
+  setupModelDropdown();
+  
+  // Get API key
+  const apiKey = instructions.getRange(API_KEY_CELL).getValue().toString().trim();
+  if (!apiKey) {
+    ui.alert('No OpenAI API key provided in Instructions!D7');
+    return;
   }
-
-  if (suggestions.length > 0) {
-    sheet.getRange(START_ROW, START_COL_SUGGESTION, suggestions.length, 2).setValues(suggestions);
+  
+  // Get selected model
+  const modelSelection = instructions.getRange(MODEL_SELECTION_CELL).getValue().toString().trim();
+  const model = getModelName(modelSelection);
+  
+  // Find last row with data to avoid processing empty rows
+  let lastDataRow = START_ROW;
+  const dataRange = sheet.getRange(START_ROW, 1, sheet.getLastRow() - START_ROW + 1, 5);
+  const dataValues = dataRange.getValues();
+  
+  for (let i = dataValues.length - 1; i >= 0; i--) {
+    if (dataValues[i].some(cell => cell !== "")) {
+      lastDataRow = START_ROW + i;
+      break;
+    }
+  }
+  
+  // If no data rows found
+  if (lastDataRow < START_ROW) {
+    ui.alert('No search term data found to process.');
+    return;
+  }
+  
+  // Get data for processing
+  const data = sheet.getRange(START_ROW, 1, lastDataRow - START_ROW + 1, 10).getValues(); // columns A to J
+  
+  // Confirm with user
+  const response = ui.alert(
+    'AI Processing',
+    `Ready to process ${data.length} search terms using ${modelSelection}. Continue?`,
+    ui.ButtonSet.YES_NO
+  );
+  
+  if (response !== ui.Button.YES) {
+    return;
+  }
+  
+  // Process data
+  const suggestions = [];
+  sheet.getRange(STATUS_CELL).setValue('Starting process...');
+  
+  try {
+    for (let i = 0; i < data.length; i++) {
+      const row = data[i];
+      // Skip completely empty rows
+      if (row.every(cell => cell === "")) continue;
+      
+      // Update status regularly
+      if (i % 5 === 0 || i === data.length - 1) {
+        sheet.getRange(STATUS_CELL).setValue(`Processing: ${i+1} / ${data.length}`);
+      }
+      
+      const [campaign, adGroup, keyword, matchType, searchTerm, impressions, clicks, cost, cpc, ctr] = row;
+      
+      // Skip if search term is empty
+      if (!searchTerm) {
+        suggestions.push(["SKIP", "No search term data in this row."]);
+        continue;
+      }
+      
+      // Format CTR correctly (remove % if present)
+      const ctrValue = ctr.toString().replace('%', '');
+      
+      const prompt = buildPrompt({ 
+        campaign, 
+        adGroup, 
+        keyword, 
+        matchType, 
+        searchTerm, 
+        impressions, 
+        clicks, 
+        cost, 
+        cpc, 
+        ctr: ctrValue 
+      });
+      
+      // Add delay to avoid rate limiting
+      if (i > 0) Utilities.sleep(200);
+      
+      // Call OpenAI with retry logic
+      let attempt = 0;
+      let success = false;
+      let response;
+      
+      while (attempt < 3 && !success) {
+        try {
+          response = callOpenAI(prompt, apiKey, model);
+          success = true;
+        } catch (e) {
+          attempt++;
+          if (attempt < 3) {
+            // Exponential backoff
+            Utilities.sleep(1000 * Math.pow(2, attempt));
+          } else {
+            Logger.log(`Failed after 3 attempts for row ${i+1}: ${e}`);
+            response = { 
+              classification: "OBSERVE", 
+              reason: "API error after multiple attempts. Please review manually." 
+            };
+          }
+        }
+      }
+      
+      const classification = response.classification || "OBSERVE";
+      const reason = response.reason || "AI returned no reason.";
+      suggestions.push([classification, reason]);
+    }
+    
+    // Update spreadsheet with results
+    if (suggestions.length > 0) {
+      sheet.getRange(START_ROW, START_COL_SUGGESTION, suggestions.length, 2).setValues(suggestions);
+    }
+    
+    // Apply conditional formatting
+    applyConditionalFormatting();
+    
+    // Clear status and show completion
+    sheet.getRange(STATUS_CELL).clearContent();
+    ui.alert(`Successfully processed ${suggestions.length} search terms.`);
+    
+  } catch (error) {
+    sheet.getRange(STATUS_CELL).setValue('Error: ' + error.toString());
+    Logger.log('Error in main function: ' + error);
+    ui.alert('An error occurred during processing. Check the logs for details.');
   }
 }
 
+// Helper function to convert dropdown selection to API model name
+function getModelName(selection) {
+  switch(selection) {
+    case 'gpt-3.5-turbo (Cheaper)':
+      return 'gpt-3.5-turbo';
+    case 'gpt-4 (Premium)':
+      return 'gpt-4';
+    case 'gpt-4o (Standard)':
+    default:
+      return 'gpt-4o';
+  }
+}
+
+// Build prompt for OpenAI
 function buildPrompt(data) {
   return `
 You are an expert Google Ads strategist evaluating search terms for optimization. 
@@ -43,16 +274,24 @@ Your goal is to classify the search term based on performance and relevance usin
 
 Classification Rules:
 1. "ADD AS NEG" — If:
-   - CTR is less than 1% and clicks = 0, OR
-   - Cost is greater than $5 with no clicks, OR
-   - The search term is clearly irrelevant to the keyword
+   - CTR is less than 1% with more than 100 impressions, OR
+   - Cost is greater than $5 with no conversions, OR
+   - The search term is clearly irrelevant to the keyword or campaign context
+
 2. "OBSERVE" — If:
-   - Impressions > 50 AND CTR > 3% but clicks < 3, OR
-   - It is low cost but shows early signs of potential
+   - New term with limited data (impressions < 100), OR
+   - Moderate performance metrics that need more data to make a decision, OR
+   - Relevant but not yet performing well enough to add as keyword
+
 3. "ADD AS KW" — If:
-   - CTR > 5% AND clicks ≥ 3, AND
-   - CPC is below $2, AND
-   - The search term is clearly relevant to the keyword
+   - CTR > 3% AND clicks ≥ 3, AND
+   - Shows consistent performance worth targeting directly, AND
+   - The search term is clearly relevant to the business/campaign
+
+Additional Context:
+- Consider brand terms and competitor names carefully
+- Higher CTR but high cost might still be "ADD AS NEG" if irrelevant to business goals
+- Look for clear patterns in the data rather than edge cases
 
 Here is the search term record:
 - Campaign: ${data.campaign}
@@ -66,22 +305,24 @@ Here is the search term record:
 - CPC: $${data.cpc}
 - CTR: ${data.ctr}%
 
-Respond in this JSON format ONLY:
+IMPORTANT: You must respond with ONLY raw JSON - no markdown formatting, no code blocks, no backticks.
+Format:
 {
   "classification": "ADD AS NEG" | "OBSERVE" | "ADD AS KW",
   "reason": "One short sentence explaining why you chose that label, based on the data and relevance."
 }`;
 }
 
-function callOpenAI(prompt, apiKey) {
+// Call OpenAI API
+function callOpenAI(prompt, apiKey, model) {
   const url = 'https://api.openai.com/v1/chat/completions';
-
   const payload = {
-    model: 'gpt-4',
+    model: model,
     messages: [{ role: 'user', content: prompt }],
     temperature: 0.2,
+    response_format: { type: "json_object" }  // Request JSON format explicitly
   };
-
+  
   const options = {
     method: 'post',
     contentType: 'application/json',
@@ -91,15 +332,48 @@ function callOpenAI(prompt, apiKey) {
     payload: JSON.stringify(payload),
     muteHttpExceptions: true,
   };
-
+  
   try {
     const response = UrlFetchApp.fetch(url, options);
-    const json = JSON.parse(response.getContentText());
+    const responseCode = response.getResponseCode();
+    const contentText = response.getContentText();
+    const json = JSON.parse(contentText);
+    
+    // Handle API errors
+    if (responseCode !== 200) {
+      const errorMessage = json.error?.message || "Unknown API error";
+      Logger.log(`OpenAI API error (${responseCode}): ${errorMessage}`);
+      throw new Error(`API error (${responseCode}): ${errorMessage}`);
+    }
+    
     const raw = json.choices?.[0]?.message?.content;
-    const parsed = JSON.parse(raw);
-    return parsed;
+    if (!raw) {
+      throw new Error("Empty response from OpenAI");
+    }
+    
+    // Clean the response before parsing
+    let cleanedResponse = raw.trim();
+    
+    // Remove markdown code block formatting if present
+    cleanedResponse = cleanedResponse.replace(/^```(?:json)?/, '');
+    cleanedResponse = cleanedResponse.replace(/```$/, '');
+    cleanedResponse = cleanedResponse.trim();
+    
+    // Parse the JSON response
+    try {
+      const parsed = JSON.parse(cleanedResponse);
+      // Validate response structure
+      if (!parsed.classification || !parsed.reason) {
+        Logger.log("Invalid structure: " + JSON.stringify(parsed));
+        throw new Error("Invalid response structure");
+      }
+      return parsed;
+    } catch (parseErr) {
+      Logger.log('JSON parse error: ' + parseErr + ' for content: ' + raw);
+      throw new Error("Could not parse OpenAI response");
+    }
   } catch (err) {
-    Logger.log('OpenAI error: ' + err);
-    return { classification: "OBSERVE", reason: "Error or invalid response from OpenAI." };
+    Logger.log('OpenAI request error: ' + err);
+    throw err;
   }
 }
